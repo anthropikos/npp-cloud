@@ -1,6 +1,8 @@
 # README
 Anthony Lee 2024-11-02
 
+Some update
+
 Module 3 assignment aims to create a two VMs in two different VPCs and configure the networking such that VM1 in VPC1 is able to send traffic to VM2 in VPC2 so that VM2 could deliver the packet to the internet. Both VM1 and VM2 do NOT have public IP thus no direct access to the Internet.
 
 Steps:
