@@ -83,6 +83,7 @@ resource "google_compute_instance" "tf-mod2-demo1-vm1" {
 
 }
 
+//terraform output -json > ./terraform_output.json
 //terraform show -json | jq
 
 // If you see something like this:
