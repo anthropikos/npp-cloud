@@ -1,1 +1,0 @@
-# coursera-npp-cloud
