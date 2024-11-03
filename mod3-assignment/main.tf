@@ -1,12 +1,5 @@
-## Notes - Anthony Lee 2024-10-31
-## - Startup script apt install need to make sure to have yes flag. I realized
-##   that the packages were not installed because bash was waiting for a user 
-##   prompt of Y/n.
-## - When a VM doesn't have a public IP, it doesn't have access to the internet.
-## - Even when a VM doesn't have a public IP and thus cannot access the internet, 
-##   it is still able to ping the other VM on the same VPC (even if they are in
-##   two different subnets) assuming that the firewall policy allows for ICMP 
-##   traffic.
+## Module 3 - Lab assignment
+## Anthony Lee 2024-11-02
 
 terraform {
   required_providers {
@@ -18,55 +11,80 @@ terraform {
 }
 
 
-// Note: If you need to reference the outputs (assigned values)
-// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_subnetwork#id
-// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_network#id
-
 // Create the VPC
-// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_network
-
-resource "google_compute_network" "mod2-vpc1" {
-  name = "mod2-vpc1"
+resource "google_compute_network" "vpc1" {
+  name = "vpc1"
   auto_create_subnetworks = "false"
 }
-resource "google_compute_network" "mod2-vpc2" {
-  name = "mod2-vpc2"
+resource "google_compute_network" "vpc2" {
+  name = "vpc2"
   auto_create_subnetworks = "false"
 }
 
+
+// Create VPC Peering
+resource "google_compute_network_peering" "vpc-peer-1to2" {
+  name = "vpc-peer-1to2"
+  network = google_compute_network.vpc1.self_link
+  peer_network = google_compute_network.vpc2.self_link
+}
+resource "google_compute_network_peering" "vpc-peer-2to1" {
+  name = "vpc-peer-2to1"
+  network = google_compute_network.vpc2.self_link
+  peer_network = google_compute_network.vpc1.self_link
+}
 
 
 // Create the subnet
-// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_subnetwork
-
-resource "google_compute_subnetwork" "mod2-vpc1-sub1" {
-  name          = "mod2-vpc1-sub1"
-  ip_cidr_range = "10.0.1.0/24"
-  region        = "us-central1"
-  network       = google_compute_network.mod2-vpc1.id
+resource "google_compute_subnetwork" "sub1" {
+  name = "sub1"
+  ip_cidr_range = "172.16.0.0/24"
+  region = "us-central1"
+  network = google_compute_network.vpc1.self_link
 }
-resource "google_compute_subnetwork" "mod2-vpc2-sub1" {
-  name          = "mod2-vpc2-sub1"
-  ip_cidr_range = "10.0.2.0/24"
-  region        = "us-central1"
-  network       = google_compute_network.mod2-vpc2.id
-}
-resource "google_compute_subnetwork" "mod2-vpc2-sub2" {
-  name          = "mod2-vpc2-sub2"
-  ip_cidr_range = "10.0.3.0/24"
-  region        = "us-central1"
-  network       = google_compute_network.mod2-vpc2.id
+resource "google_compute_subnetwork" "sub2" {
+  name = "sub2"
+  ip_cidr_range = "172.16.1.0/24"
+  region = "us-east1"
+  network = google_compute_network.vpc2.self_link
 }
 
+
+// Create Cloud Router
+resource "google_compute_router" "cloud-router" {
+  name = "cloud-router"
+  network = google_compute_network.vpc2.self_link
+  region = google_compute_subnetwork.sub2.region
+}
+
+
+// Create Cloud NAT
+resource "google_compute_router_nat" "cloud-nat" {
+  name = "cloud-nat"
+  router = google_compute_router.cloud-router.name
+  region = google_compute_subnetwork.sub2.region
+  nat_ip_allocate_option = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
+
+  subnetwork {  # Does this force NAT to the right region as the router?
+    name = google_compute_subnetwork.sub2.self_link
+    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+  }
+
+  # depends_on = [google_compute_router.cloud-router]  # Cannot add the NAT if the router is not up
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
+}
 
 
 // Create Firewall rule - allow icmp, tcp:22 (ssh), and tcp:1234 (custom)
-//https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_firewall
-resource "google_compute_firewall" "mod2-vpc1-fwrule1" {
-  project = "cloud-networking-course"
-  name        = "mod2-vpc1-fwrule1"
-  network     = google_compute_network.mod2-vpc1.id
-  depends_on = [google_compute_network.mod2-vpc1]  # VPC needs to be created prior to the firewall rules
+resource "google_compute_firewall" "fwrule1" {
+  name = "fwrule1"
+  network = google_compute_network.vpc1.self_link
+  depends_on = [google_compute_network.vpc1]  # TF meta-argument
 
   allow {
     protocol  = "tcp"
@@ -77,11 +95,10 @@ resource "google_compute_firewall" "mod2-vpc1-fwrule1" {
   }
   source_ranges = ["0.0.0.0/0"]
 }
-resource "google_compute_firewall" "mod2-vpc2-fwrule1" {
-  project = "cloud-networking-course"
-  name        = "mod2-vpc2-fwrule1"
-  network     = google_compute_network.mod2-vpc2.id
-  depends_on = [google_compute_network.mod2-vpc2]  # VPC needs to be created prior to the firewall rules
+resource "google_compute_firewall" "fwrule2" {
+  name = "fwrule2"
+  network = google_compute_network.vpc2.self_link
+  depends_on = [google_compute_network.vpc2]  # TF meta-argument
 
   allow {
     protocol  = "tcp"
@@ -97,23 +114,22 @@ resource "google_compute_firewall" "mod2-vpc2-fwrule1" {
 
 
 // Create a VM, and put it inside of subnet1
-// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/compute_instance
-resource "google_compute_instance" "mod2-vpc1-sub1-vm1" {
-  name = "mod2-vpc1-sub1-vm1"
+resource "google_compute_instance" "vm1" {
+  name = "vm1"
   machine_type = "e2-micro"
   zone = "us-central1-a"
-  depends_on = [google_compute_network.mod2-vpc1, google_compute_subnetwork.mod2-vpc1-sub1]
+  depends_on = [google_compute_network.vpc1, google_compute_subnetwork.sub1]
   network_interface {
     
     # When access_config isn't provided, the VM would not have a public IP
-    access_config {
-      network_tier = "STANDARD" // This indicates to give a public IP address
-    }
-    
+    # access_config {
+    #   network_tier = "STANDARD" // This indicates to give a public IP address
+    # }
+    network_ip = "172.16.0.2"
     nic_type = "VIRTIO_NET"
     stack_type = "IPV4_ONLY"
-    network = google_compute_network.mod2-vpc1.self_link
-    subnetwork = google_compute_subnetwork.mod2-vpc1-sub1.self_link
+    network = google_compute_network.vpc1.self_link
+    subnetwork = google_compute_subnetwork.sub1.self_link
   }
 
   boot_disk {
@@ -122,53 +138,26 @@ resource "google_compute_instance" "mod2-vpc1-sub1-vm1" {
     }
   } 
   metadata = {
-    startup-script = "sudo apt -y update &>~/update.log; sudo apt -y install netcat-traditional ncat &>~/install.log;"
-    }
-  # metadata = {
-  #   startup-script = <<-EOF
-  #   sudo apt -y update &>~/update.log;
-  #   sudo apt -y install netcat-traditional ncat &>~/install.log;
-  #   EOF
-  # }
-}
-resource "google_compute_instance" "mod2-vpc2-sub1-vm1" {
-  name = "mod2-vpc2-sub1-vm1"
-  machine_type = "e2-micro"
-  zone = "us-central1-a"
-  depends_on = [google_compute_network.mod2-vpc2, google_compute_subnetwork.mod2-vpc2-sub1]
-  network_interface {
-    
-    # When access_config isn't provided, the VM would not have a public IP
-    access_config {
-      network_tier = "STANDARD" // This indicates to give a public IP address
-    }
-    
-    nic_type = "VIRTIO_NET"
-    stack_type = "IPV4_ONLY"
-    network = google_compute_network.mod2-vpc2.self_link
-    subnetwork = google_compute_subnetwork.mod2-vpc2-sub1.self_link
-  }
+    startup-script = <<-EOF
+    sudo apt -y update &>~/update.log
+    sudo apt -y install netcat-traditional ncat &>~/install.log
 
-  boot_disk {
-    initialize_params {
-      image = "debian-12-bookworm-v20240312"
-    }
-  } 
-  metadata = {
-    startup-script = "sudo apt -y update &>~/update.log; sudo apt -y install netcat-traditional ncat &>~/install.log;"
-    }
-  # metadata = {
-  #   startup-script = <<-EOF
-  #   sudo apt -y update &>~/update.log;
-  #   sudo apt -y install netcat-traditional ncat &>~/install.log;
-  #   EOF
-  # }
+    sudo ip link add vxlan0 type vxlan id 5001 local 172.16.0.2 remote 172.16.1.2 dev ens4 dstport 50000
+    # sudo ip link add vxlan0 type vxlan id 5001 local 172.16.0.1 remote 172.16.1.1 dev ens4 dstport 50000  # Specifying the IP of the NICs
+    # sudo ip link add vxlan0 type vxlan id 5001 local 192.168.100.2 remote 192.168.100.3 dev ens4 dstport 50000  # Specifying the IP of the vxlan ends instead of the VMs' IPs.
+    sudo ip addr add 192.168.100.2/24 dev vxlan0  # Implicit route add
+    sudo ip link set up dev vxlan0
+
+    sudo ip route add 34.223.124.0/24 via 192.168.100.3  # Direct IP to neverssl.com
+
+    EOF
+  }
 }
-resource "google_compute_instance" "mod2-vpc2-sub1-vm2" {
-  name = "mod2-vpc2-sub1-vm2"
+resource "google_compute_instance" "vm2" {
+  name = "vm2"
   machine_type = "e2-micro"
-  zone = "us-central1-a"
-  depends_on = [google_compute_network.mod2-vpc2, google_compute_subnetwork.mod2-vpc2-sub1]
+  zone = "us-east1-d"  # us-east1-a zone is down when I ran this code
+  depends_on = [google_compute_network.vpc2, google_compute_subnetwork.sub2]
   network_interface {
     
     # When access_config isn't provided, the VM would not have a public IP
@@ -176,10 +165,11 @@ resource "google_compute_instance" "mod2-vpc2-sub1-vm2" {
     #   network_tier = "STANDARD" // This indicates to give a public IP address
     # }
     
+    network_ip = "172.16.1.2"
     nic_type = "VIRTIO_NET"
     stack_type = "IPV4_ONLY"
-    network = google_compute_network.mod2-vpc2.self_link
-    subnetwork = google_compute_subnetwork.mod2-vpc2-sub1.self_link
+    network = google_compute_network.vpc2.self_link
+    subnetwork = google_compute_subnetwork.sub2.self_link
   }
 
   boot_disk {
@@ -188,45 +178,22 @@ resource "google_compute_instance" "mod2-vpc2-sub1-vm2" {
     }
   } 
   metadata = {
-    startup-script = "sudo apt -y update &>~/update.log; sudo apt -y install netcat-traditional ncat &>~/install.log;"
-    }
-  # metadata = {
-  #   startup-script = <<-EOF
-  #   sudo apt -y update &>~/update.log;
-  #   sudo apt -y install netcat-traditional ncat &>~/install.log;
-  #   EOF
-  # }
-}
-resource "google_compute_instance" "mod2-vpc2-sub2-vm1" {
-  name = "mod2-vpc2-sub2-vm1"
-  machine_type = "e2-micro"
-  zone = "us-central1-a"
-  depends_on = [google_compute_network.mod2-vpc2, google_compute_subnetwork.mod2-vpc2-sub2]
-  network_interface {
+    startup-script = <<-EOF
+    sudo apt -y update &>~/update.log
+    sudo apt -y install netcat-traditional ncat &>~/install.log
     
-    # When access_config isn't provided, the VM would not have a public IP
-    # access_config {
-    #   network_tier = "STANDARD" // This indicates to give a public IP address
-    # }
-    
-    nic_type = "VIRTIO_NET"
-    stack_type = "IPV4_ONLY"
-    network = google_compute_network.mod2-vpc2.self_link
-    subnetwork = google_compute_subnetwork.mod2-vpc2-sub2.self_link
-  }
+    sudo ip link add vxlan0 type vxlan id 5001 remote 172.16.0.2 local 172.16.1.2 dev ens4 dstport 50000
+    # sudo ip link add vxlan0 type vxlan id 5001 remote 172.16.0.1 local 172.16.1.1 dev ens4 dstport 50000  # Specifying the IP of the NICs
+    # sudo ip link add vxlan0 type vxlan id 5001 remote 192.168.100.2 local 192.168.100.3 dev ens4 dstport 50000  # Specifying the IP of the vxlan ends instead of the VMs' IPs.
+    sudo ip addr add 192.168.100.3/24 dev vxlan0  # Implicit route add
+    sudo ip link set up dev vxlan0
 
-  boot_disk {
-    initialize_params {
-      image = "debian-12-bookworm-v20240312"
-    }
-  } 
-  metadata = {
-    startup-script = "sudo apt update &>~/update.log; sudo apt install netcat-traditional ncat &>~/install.log;"
-    }
-  # metadata = {
-  #   startup-script = <<-EOF
-  #   sudo apt update &>~/update.log;
-  #   sudo apt install netcat-traditional ncat &>~/install.log;
-  #   EOF
-  # }
+    # Uncomment these lines to tell VM2 what to deal with packet from VM1 for neverssl.com
+    sudo sh -c 'echo "1" > /proc/sys/net/ipv4/ip_forward'  # Can also edit the /etc/sysctl.conf
+    sudo sysctl -p  # Load sysctl conf again
+    # sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o ens4 -j MASQUERADE
+    sudo iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o ens4 -j MASQUERADE
+
+    EOF
+  }
 }
