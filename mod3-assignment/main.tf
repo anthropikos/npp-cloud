@@ -27,11 +27,23 @@ resource "google_compute_network_peering" "vpc-peer-1to2" {
   name = "vpc-peer-1to2"
   network = google_compute_network.vpc1.self_link
   peer_network = google_compute_network.vpc2.self_link
+  
+  import_custom_routes = true
+  export_custom_routes = true
+
+  ## Anthony suspects that the routes created in the startup scripts are not added to the VPC peering routing tables
+  depends_on = [ google_compute_instance.vm1, google_compute_instance.vm2 ]
 }
 resource "google_compute_network_peering" "vpc-peer-2to1" {
   name = "vpc-peer-2to1"
   network = google_compute_network.vpc2.self_link
   peer_network = google_compute_network.vpc1.self_link
+
+  import_custom_routes = true
+  export_custom_routes = true
+
+  ## Anthony suspects that the routes created in the startup scripts are not added to the VPC peering routing tables
+  depends_on = [ google_compute_instance.vm1, google_compute_instance.vm2 ]
 }
 
 
@@ -91,6 +103,10 @@ resource "google_compute_firewall" "fwrule1" {
     ports     = ["22", "1234"]
   }
   allow {
+    protocol  = "udp"  # vxlan runs on UDP
+    ports     = ["50000"]
+  }
+  allow {
     protocol = "icmp"
   }
   source_ranges = ["0.0.0.0/0"]
@@ -103,6 +119,10 @@ resource "google_compute_firewall" "fwrule2" {
   allow {
     protocol  = "tcp"
     ports     = ["22", "1234"]
+  }
+  allow {
+    protocol  = "udp"  # vxlan runs on UDP
+    ports     = ["50000"]
   }
   allow {
     protocol = "icmp"
@@ -143,12 +163,11 @@ resource "google_compute_instance" "vm1" {
     sudo apt -y install netcat-traditional ncat &>~/install.log
 
     sudo ip link add vxlan0 type vxlan id 5001 local 172.16.0.2 remote 172.16.1.2 dev ens4 dstport 50000
-    # sudo ip link add vxlan0 type vxlan id 5001 local 172.16.0.1 remote 172.16.1.1 dev ens4 dstport 50000  # Specifying the IP of the NICs
-    # sudo ip link add vxlan0 type vxlan id 5001 local 192.168.100.2 remote 192.168.100.3 dev ens4 dstport 50000  # Specifying the IP of the vxlan ends instead of the VMs' IPs.
     sudo ip addr add 192.168.100.2/24 dev vxlan0  # Implicit route add
     sudo ip link set up dev vxlan0
 
-    sudo ip route add 34.223.124.0/24 via 192.168.100.3  # Direct IP to neverssl.com
+    sudo ip route add 34.223.124.0/24 via 192.168.100.3  # Direct IP to neverssl.com - This works.
+    # sudo ip route add 34.223.124.45/32 via 192.168.100.3  # Also works.
 
     EOF
   }
@@ -181,18 +200,16 @@ resource "google_compute_instance" "vm2" {
     startup-script = <<-EOF
     sudo apt -y update &>~/update.log
     sudo apt -y install netcat-traditional ncat &>~/install.log
-    
+
     sudo ip link add vxlan0 type vxlan id 5001 remote 172.16.0.2 local 172.16.1.2 dev ens4 dstport 50000
-    # sudo ip link add vxlan0 type vxlan id 5001 remote 172.16.0.1 local 172.16.1.1 dev ens4 dstport 50000  # Specifying the IP of the NICs
-    # sudo ip link add vxlan0 type vxlan id 5001 remote 192.168.100.2 local 192.168.100.3 dev ens4 dstport 50000  # Specifying the IP of the vxlan ends instead of the VMs' IPs.
     sudo ip addr add 192.168.100.3/24 dev vxlan0  # Implicit route add
     sudo ip link set up dev vxlan0
 
     # Uncomment these lines to tell VM2 what to deal with packet from VM1 for neverssl.com
     sudo sh -c 'echo "1" > /proc/sys/net/ipv4/ip_forward'  # Can also edit the /etc/sysctl.conf
     sudo sysctl -p  # Load sysctl conf again
-    # sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o ens4 -j MASQUERADE
-    sudo iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o ens4 -j MASQUERADE
+    sudo iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o ens4 -j MASQUERADE
+    # sudo iptables -t nat -A POSTROUTING -s 192.168.0.0/16 -o ens4 -j MASQUERADE  # Also works.
 
     EOF
   }
